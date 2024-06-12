@@ -56,21 +56,132 @@ static void lv_tick_task(void *arg);
 static void guiTask(void *pvParameter);
 static void create_demo_application(void);
 
+#define STA_LED_PIN     8           // 状态指示灯
+#define STA_LED_ON      0  
+#define STA_LED_OFF     1 
+
+#define KEY1_PIN        9
+#define KEY2_PIN        10
+#define KEY3_PIN        11
+
+
+void state_led_init(void)
+{
+    gpio_set_direction(STA_LED_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(STA_LED_PIN, STA_LED_OFF);
+}
+
+void state_led_ctr(uint8_t sta)
+{
+    gpio_set_level(STA_LED_PIN, sta);
+}
+
+
+void ledTask( void *pvParameters )
+{	
+    state_led_init();
+    uint8_t flag = 0;
+	for( ;; )
+	{
+        if(flag)    state_led_ctr(STA_LED_ON);
+        else        state_led_ctr(STA_LED_OFF);
+        flag = !flag;
+		vTaskDelay( pdMS_TO_TICKS( 1000UL ) );
+	}
+}
+
+void my_key_init(void)
+{
+    gpio_set_direction(KEY1_PIN, GPIO_MODE_INPUT);
+    gpio_set_direction(KEY2_PIN, GPIO_MODE_INPUT);
+    gpio_set_direction(KEY3_PIN, GPIO_MODE_INPUT);
+}
+
+uint8_t Key_Scan(uint8_t mode)
+{
+    static uint8_t key_up = 1;
+
+    if(mode) key_up = 1;
+
+    if(key_up && 
+        ((0 == gpio_get_level(KEY1_PIN))
+        || (0 == gpio_get_level(KEY2_PIN))
+        || (0 == gpio_get_level(KEY3_PIN))))
+    {
+        vTaskDelay( pdMS_TO_TICKS( 10UL ) );
+        key_up = 0;
+        if(0 == gpio_get_level(KEY1_PIN))           return 1;
+        else if(0 == gpio_get_level(KEY2_PIN))      return 2;
+        else if(0 == gpio_get_level(KEY3_PIN))      return 3;
+    }
+    else if(0 == key_up 
+        && 1 == gpio_get_level(KEY1_PIN)
+        && 1 == gpio_get_level(KEY2_PIN)
+        && 1 == gpio_get_level(KEY3_PIN))
+    {
+        key_up = 1;
+    }
+
+    return 0;
+}
+
+// 按键状态更新函数
+static bool my_key_read( lv_indev_drv_t * indev_driver, lv_indev_data_t * data )
+{
+	static uint32_t last_key = 0;
+	uint8_t act_enc = Key_Scan(1);
+	
+	if(act_enc != 0) {
+	    switch(act_enc) {
+	        case 1:
+	            act_enc = LV_KEY_ENTER;
+	            data->state = LV_INDEV_STATE_PR;	
+	            break;
+	        case 2:
+	            act_enc = LV_KEY_RIGHT;
+	            data->state = LV_INDEV_STATE_PR;
+	            data->enc_diff++;
+	            break;
+	        case 3:
+	            act_enc = LV_KEY_LEFT;
+	            data->state = LV_INDEV_STATE_PR;
+	            data->enc_diff--;
+	            break;
+	    }
+	    last_key = (uint32_t)act_enc;        
+	}
+	data->key = last_key;
+
+    return false;
+}
 /**********************
  *   APPLICATION MAIN
  **********************/
-void app_main() {
-
-    /* If you want to use a task to create the graphic, you NEED to create a Pinned task
-     * Otherwise there can be problem such as memory corruption and so on.
-     * NOTE: When not using Wi-Fi nor Bluetooth you can pin the guiTask to core 0 */
+void app_main() 
+{
     xTaskCreatePinnedToCore(guiTask, "gui", 4096*2, NULL, 0, NULL, 1);
+    xTaskCreate(ledTask, "led", 1024, NULL, 0, NULL);
+}
+
+
+static lv_indev_t *indev_encoder;
+void lv_port_indev_init(void)
+{
+    static lv_indev_drv_t indev_drv;
+	my_key_init();
+	lv_indev_drv_init( &indev_drv);
+	indev_drv.type = LV_INDEV_TYPE_ENCODER;
+	indev_drv.read_cb = my_key_read;
+	indev_encoder = lv_indev_drv_register( &indev_drv );
+    if(indev_encoder == NULL)
+        printf("indev_encoder is NULL");
 }
 
 /* Creates a semaphore to handle concurrent call to lvgl stuff
  * If you wish to call *any* lvgl function from other threads/tasks
  * you should lock on the very same semaphore! */
 SemaphoreHandle_t xGuiSemaphore;
+lv_obj_t *slider_label = NULL;
 
 static void guiTask(void *pvParameter) {
 
@@ -138,6 +249,8 @@ static void guiTask(void *pvParameter) {
     lv_indev_drv_register(&indev_drv);
 #endif
 
+    lv_port_indev_init();
+
     /* Create and start a periodic timer interrupt to call lv_tick_inc */
     const esp_timer_create_args_t periodic_timer_args = {
         .callback = &lv_tick_task,
@@ -169,42 +282,88 @@ static void guiTask(void *pvParameter) {
     vTaskDelete(NULL);
 }
 
+
+static void btn_event_handler(lv_obj_t * obj, lv_event_t event)
+{
+    if(event == LV_EVENT_CLICKED) {
+        printf("Clicked\n");
+    }
+    else if(event == LV_EVENT_VALUE_CHANGED) {
+        printf("Toggled\n");
+    }
+}
+
+static void slider_event_cb(lv_obj_t * slider, lv_event_t event)
+{
+
+    if(event == LV_EVENT_VALUE_CHANGED)
+    {
+        lv_label_set_text_fmt(slider_label, "%d", lv_slider_get_value(slider));
+    }
+    
+}
+
 static void create_demo_application(void)
 {
-    /* When using a monochrome display we only show "Hello World" centered on the
-     * screen */
-#if defined CONFIG_LV_TFT_DISPLAY_MONOCHROME || \
-    defined CONFIG_LV_TFT_DISPLAY_CONTROLLER_ST7735S
-
-    /* use a pretty small demo for monochrome displays */
-    /* Get the current screen  */
+ 
     lv_obj_t * scr = lv_disp_get_scr_act(NULL);
+
+    //新建一个组
+    lv_group_t *g = lv_group_create();
+    
 
     /*Create a Label on the currently active screen*/
     lv_obj_t * label1 =  lv_label_create(scr, NULL);
+    lv_obj_t * label2 =  lv_label_create(scr, NULL);
+    lv_obj_t * label3 =  lv_label_create(scr, NULL);
 
-    /*Modify the Label's text*/
-    lv_label_set_text(label1, "Hello\nworld");
+     /*使能recolor*/
+    lv_label_set_recolor(label1,true);
+    lv_label_set_recolor(label2,true);
+    lv_label_set_recolor(label3,true);
 
-    /* Align the Label to the center
-     * NULL means align on parent (which is the screen now)
-     * 0, 0 at the end means an x, y offset after alignment*/
-    lv_obj_align(label1, NULL, LV_ALIGN_CENTER, 0, 0);
-#else
-    /* Otherwise we show the selected demo */
+    /*设置对应文本颜色*/
+    lv_label_set_text(label1,"#FF0000 color# Red");
+    lv_label_set_text(label2,"#00FF00 color# Green");
+    lv_label_set_text(label3,"#0000FF color# Bule");
 
-    #if defined CONFIG_LV_USE_DEMO_WIDGETS
-        lv_demo_widgets();
-    #elif defined CONFIG_LV_USE_DEMO_KEYPAD_AND_ENCODER
-        lv_demo_keypad_encoder();
-    #elif defined CONFIG_LV_USE_DEMO_BENCHMARK
-        lv_demo_benchmark();
-    #elif defined CONFIG_LV_USE_DEMO_STRESS
-        lv_demo_stress();
-    #else
-        #error "No demo application selected."
-    #endif
-#endif
+    lv_obj_align(label1, NULL, LV_ALIGN_IN_TOP_LEFT, 0, 0);
+    lv_obj_align(label2, NULL, LV_ALIGN_IN_TOP_LEFT, 0, 16);
+    lv_obj_align(label3, NULL, LV_ALIGN_IN_TOP_LEFT, 0, 32);
+    
+    //创建对象
+    lv_obj_t * button1 = lv_btn_create(scr, NULL);
+    lv_obj_t * button2 = lv_btn_create(scr, NULL);
+
+    lv_obj_t *btn_label1 = lv_label_create(button1, NULL);
+    lv_obj_t *btn_label2 = lv_label_create(button2, NULL);
+
+    lv_label_set_text(btn_label1, "OK");
+    lv_obj_set_size(button1, 40, 20);
+    lv_obj_align(button1, NULL, LV_ALIGN_CENTER, 20, -25);
+    lv_obj_set_event_cb(button1, btn_event_handler);
+
+    lv_label_set_text(btn_label2, "PASS");
+    lv_obj_set_size(button2, 40, 20);
+    lv_obj_align(button2, NULL, LV_ALIGN_CENTER, 20, 0);
+    lv_obj_set_event_cb(button2, btn_event_handler);
+
+    lv_obj_t *slider = lv_slider_create(scr, NULL);   //创建个滑条
+    lv_obj_align(slider, NULL, LV_ALIGN_IN_TOP_LEFT, 10, 55);
+    lv_obj_set_size(slider, 100, 10);
+    lv_obj_set_event_cb(slider, slider_event_cb); 
+
+    slider_label = lv_label_create(scr, NULL);    //标签
+    lv_label_set_text(slider_label, "0%");
+    lv_obj_align_mid(slider_label, slider, LV_ALIGN_OUT_RIGHT_MID, 10, 0);  //放在滑条的右边
+
+
+    lv_group_add_obj(g, button1);
+    lv_group_add_obj(g, button2);
+    lv_group_add_obj(g, slider);
+
+    lv_indev_set_group(indev_encoder, g);
+    lv_group_set_click_focus(g, true);
 }
 
 static void lv_tick_task(void *arg) {
